@@ -1,0 +1,157 @@
+import cv2
+import numpy as np
+import random
+import rclpy
+from geometry_msgs.msg import Twist, Vector3
+
+
+class RobotControl(R2D2):
+    def _init_(self):
+        super()._init_()
+
+        
+        self.tree = []
+        self.goal_reached = False
+        self.path = []
+        self.current_path_index = 0
+
+    def navigation_start(self):
+        super().navigation_start()
+
+        
+        start_point = (0, 0)
+        goal_point = (305, 265)
+        num_iterations = 10000
+        step_size = 10
+
+        
+        img_file = '~/Downloads/map_1681423584.png'
+        self.generate_rrt(img_file, start_point, goal_point, num_iterations, step_size)
+
+    def navigation_update(self):
+
+        if self.goal_reached:
+            
+            self.pub_cmd_vel.publish(self.move_robot(0.0, 0.0))
+            return
+
+        if self.path:
+            target_node = self.path[self.current_path_index]
+            current_position = self.get_robot_position()
+
+            distance = np.sqrt((current_position[0] - target_node[0]) * 2 + (current_position[1] - target_node[1]) * 2)
+
+            if distance <= self.step_size:
+                self.current_path_index += 1
+
+            dx = target_node[0] - current_position[0]
+            dy = target_node[1] - current_position[1]
+            theta = np.arctan2(dy, dx)
+
+            linear_velocity = 1.0
+            angular_velocity = 0.0
+
+            if abs(theta - current_position[2]) > 0.1:
+                angular_velocity = np.sign(theta - current_position[2]) * 0.5
+
+            self.pub_cmd_vel.publish(self.move_robot(linear_velocity, angular_velocity))
+
+    def generate_rrt(self, img_file, start, goal, num_iterations=10000, step_size=10):
+        img = cv2.imread(img_file, cv2.IMREAD_IGNORE_ORIENTATION)
+        height, width = img.shape
+
+        path_img = cv2.imread('map_1681423584.png', cv2.IMREAD_IGNORE_ORIENTATION)
+
+        start_node = Node(start[0], start[1])
+        goal_node = Node(goal[0], goal[1])
+
+        self.tree = [start_node]
+
+        for _ in range(num_iterations):
+            
+            rand_point = Node(random.randint(0, width - 1), random.randint(0, height - 1))
+
+            nearest_node = self.tree[0]
+            for node in self.tree:
+                if self.distance(node, rand_point) < self.distance(nearest_node, rand_point):
+                    nearest_node = node
+
+            new_node = self.move_towards(nearest_node, rand_point, step_size)
+
+            
+            if not self.is_valid_point(new_node, width, height, img):
+                continue
+
+            
+            new_node.parent = nearest_node
+
+            
+            self.tree.append(new_node)
+
+            
+            if self.distance(new_node, goal_node) <= step_size:
+                goal_node.parent = new_node
+                self.goal_reached = True
+                break
+
+        
+        path_img = self.draw_path(path_img, goal_node)
+
+        
+        cv2.imshow('Original Image', img)
+        cv2.imshow('Path Image', path_img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+        
+        self.path = self.extract_path(goal_node)
+
+        
+        self.current_path_index = 0
+
+    def move_robot(self, linear_velocity, angular_velocity):
+        
+        twist = Twist()
+
+        # Para frente
+        if linear_velocity > 0:
+            twist.linear.x = linear_velocity
+            twist.angular.z = 0.0
+
+        # Para tras
+        elif linear_velocity < 0:
+            twist.linear.x = -linear_velocity
+            twist.angular.z = 0.0
+
+        # Direita
+        elif angular_velocity < 0:
+            twist.linear.x = 0.0
+            twist.angular.z = angular_velocity
+
+        # Esquerda
+        elif angular_velocity > 0:
+            twist.linear.x = 0.0
+            twist.angular.z = angular_velocity
+
+        # Parar
+        else:
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+
+        self.cmd_vel.publish(twist)
+
+        pass
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    r2d2_control = RobotControl()
+    r2d2_control.navigation_start()
+    r2d2_control.navigation()
+
+    r2d2_control.destroy_node()
+    rclpy.shutdown()
+
+if _name_ == '_main_':
+    main()
